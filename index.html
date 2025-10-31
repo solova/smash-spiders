@@ -2,49 +2,37 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Wall Spider Smash – WebAR</title>
+  <title>Wall Spider Smash – AR</title>
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <style>
     html, body { margin:0; height:100%; overflow:hidden; background:#000; }
     #overlay {
       position: fixed; inset: 0; pointer-events: none; display: flex;
       align-items: flex-start; justify-content: space-between; padding: 16px;
-      font-family: system-ui, sans-serif; color: white;
+      font-family: system-ui, sans-serif; color: white; z-index: 100;
     }
-    .pill { background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.25);
-      border-radius: 999px; padding: 8px 12px; pointer-events:auto; }
-    #enter { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
-      padding: 12px 16px; font-weight: 600; }
-    #hint { opacity:.85 }
+    .pill { background: rgba(0,0,0,.7); border: 1px solid rgba(255,255,255,.3);
+      border-radius: 999px; padding: 8px 12px; pointer-events:auto; font-size: 14px; }
+    #hint { opacity:.9; max-width: 200px; }
   </style>
 </head>
 <body>
   <div id="overlay">
     <div class="pill" id="score">Score: 0</div>
-    <div class="pill" id="hint">Move phone to find a wall, then tap spiders!</div>
+    <div class="pill" id="hint">Point camera at the Hiro marker to spawn spiders!</div>
   </div>
-  <button id="enter" class="pill">Enter AR</button>
 
+  <script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.4.2/dist/aframe-master.min.js"></script>
+  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
   <script type="module">
     import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
-
-    // --- Basic three.js setup ---
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.xr.enabled = true;
-    document.body.appendChild(renderer.domElement);
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera();
-
-    const light = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0);
-    scene.add(light);
 
     // Score UI
     let score = 0;
     const scoreEl = document.getElementById("score");
     const hintEl  = document.getElementById("hint");
 
-    // Make a tiny “spider” texture (canvas generated)
+    // Make a tiny "spider" texture (canvas generated)
     function makeSpiderTexture() {
       const s = 128, c = document.createElement("canvas"); c.width = c.height = s;
       const g = c.getContext("2d");
@@ -59,6 +47,7 @@
       legs.forEach(([x1,y1,x2,y2])=>{ g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.stroke(); });
       return new THREE.CanvasTexture(c);
     }
+
     const spiderTex = makeSpiderTexture();
     spiderTex.anisotropy = 8;
     const spiderMat = new THREE.MeshBasicMaterial({ map: spiderTex, transparent: true });
@@ -66,131 +55,123 @@
 
     // Pool for spiders
     const spiders = [];
-    function spawnSpidersOnPlane(matrix, count=7) {
-      // Orient spiders to the plane: take the hit pose matrix as the plane transform.
-      const base = new THREE.Matrix4().fromArray(matrix);
-      const planePos = new THREE.Vector3().setFromMatrixPosition(base);
-      const planeQuat = new THREE.Quaternion().setFromRotationMatrix(base);
+    let spidersSpawned = false;
+    let markerObject = null;
+    let scene = null;
+    let camera = null;
+    let raycaster = null;
 
-      for (let i=0;i<count;i++){
+    // Wait for A-Frame to initialize
+    window.addEventListener('load', () => {
+      const sceneEl = document.querySelector('a-scene');
+
+      // Wait for scene to fully load
+      sceneEl.addEventListener('loaded', () => {
+        scene = sceneEl.object3D;
+        camera = sceneEl.camera;
+        raycaster = new THREE.Raycaster();
+
+        // Get the marker object
+        const markerEl = document.querySelector('a-marker');
+        markerObject = markerEl.object3D;
+
+        // Listen for marker found/lost events
+        markerEl.addEventListener('markerFound', () => {
+          if (!spidersSpawned) {
+            spawnSpiders();
+            spidersSpawned = true;
+            hintEl.textContent = "Tap spiders to smash!";
+          }
+        });
+
+        markerEl.addEventListener('markerLost', () => {
+          hintEl.textContent = "Point camera at marker!";
+        });
+
+        // Add click handler
+        document.addEventListener('click', onTap, { passive: false });
+        document.addEventListener('touchend', onTap, { passive: false });
+      });
+    });
+
+    function spawnSpiders() {
+      const count = 10;
+      for (let i = 0; i < count; i++) {
         const m = new THREE.Mesh(spiderGeo, spiderMat.clone());
-        // Random offsets within ~0.6m x 0.6m patch on the plane
-        const offsetX = (Math.random()-0.5)*0.6;
-        const offsetY = (Math.random()-0.5)*0.6;
-        // Create a plane-local frame: right (x), up (y), forward (z)
-        const right = new THREE.Vector3(1,0,0).applyQuaternion(planeQuat);
-        const up    = new THREE.Vector3(0,1,0).applyQuaternion(planeQuat);
-        const pos   = planePos.clone().addScaledVector(right, offsetX).addScaledVector(up, offsetY);
 
-        m.position.copy(pos);
-        // Make spiders cling to the plane surface (face outward)
-        m.quaternion.copy(planeQuat);
-        // Tiny random rotation and scale variance
-        m.rotateZ((Math.random()-0.5)*0.6);
-        const s = 0.9 + Math.random()*0.4;
+        // Random offsets within marker area (Hiro marker is about 8cm square)
+        // We'll spread them over a slightly larger area
+        const offsetX = (Math.random() - 0.5) * 0.15; // 15cm spread
+        const offsetY = (Math.random() - 0.5) * 0.15;
+        const offsetZ = Math.random() * 0.02; // slight height variation
+
+        m.position.set(offsetX, offsetY, offsetZ);
+
+        // Random rotation and scale variance
+        m.rotateZ((Math.random() - 0.5) * Math.PI * 2);
+        const s = 0.8 + Math.random() * 0.5;
         m.scale.setScalar(s);
 
         m.userData.alive = true;
-        scene.add(m);
+        markerObject.add(m);
         spiders.push(m);
       }
-      hintEl.textContent = "Tap spiders to smash!";
     }
 
-    // Raycaster for tap hits
-    const raycaster = new THREE.Raycaster();
-    const tap = (x, y) => {
-      const rect = renderer.domElement.getBoundingClientRect();
+    function onTap(e) {
+      e.preventDefault();
+
+      if (!camera || !raycaster || spiders.length === 0) return;
+
+      // Get touch/click position
+      const touch = e.changedTouches ? e.changedTouches[0] : e;
+      const rect = document.querySelector('a-scene').canvas.getBoundingClientRect();
+
       const ndc = {
-        x: ((x - rect.left) / rect.width) * 2 - 1,
-        y: -(((y - rect.top) / rect.height) * 2 - 1)
+        x: ((touch.clientX - rect.left) / rect.width) * 2 - 1,
+        y: -(((touch.clientY - rect.top) / rect.height) * 2 - 1)
       };
+
       raycaster.setFromCamera(ndc, camera);
-      const hits = raycaster.intersectObjects(spiders.filter(s=>s.userData.alive), false);
+      const hits = raycaster.intersectObjects(spiders.filter(s => s.userData.alive), false);
+
       if (hits.length) {
         const m = hits[0].object;
         m.userData.alive = false;
-        // squash animation + fade
+
+        // Squash animation + fade
         const start = performance.now();
+        const originalScale = m.scale.x;
         const anim = (t) => {
-          const k = Math.min(1, (t-start)/120);
-          m.scale.set(1.2-k*1.1, 0.2+k*0.2, 1); // squash on Y
-          m.material.opacity = 1-k;
-          if (k < 1) requestAnimationFrame(anim);
-          else scene.remove(m);
+          const k = Math.min(1, (t - start) / 120);
+          m.scale.set(originalScale * (1.2 - k * 1.1), originalScale * (0.2 + k * 0.2), 1);
+          m.material.opacity = 1 - k;
+          if (k < 1) {
+            requestAnimationFrame(anim);
+          } else {
+            markerObject.remove(m);
+          }
         };
         requestAnimationFrame(anim);
+
         score += 1;
         scoreEl.textContent = `Score: ${score}`;
       }
-    };
-
-    renderer.domElement.addEventListener("click", (e)=>{
-      // Only handle taps during an XR session
-      if (renderer.xr.isPresenting) tap(e.clientX, e.clientY);
-    }, { passive: true });
-
-    // --- WebXR AR session + hit test ---
-    let xrRefSpace = null;
-    let hitSource = null;
-    let placed = false; // once we have a plane, spawn spiders once
-
-    async function startAR() {
-      if (!navigator.xr) {
-        alert("WebXR not available on this device/browser.");
-        return;
-      }
-      const supported = await navigator.xr.isSessionSupported("immersive-ar");
-      if (!supported) {
-        alert("AR session not supported here.");
-        return;
-      }
-      const session = await navigator.xr.requestSession("immersive-ar", {
-        requiredFeatures: ["hit-test"],
-        optionalFeatures: ["dom-overlay", "anchors", "local-floor"],
-        domOverlay: { root: document.getElementById("overlay") }
-      });
-      renderer.xr.setReferenceSpaceType("local");
-      await renderer.xr.setSession(session);
-
-      xrRefSpace = await session.requestReferenceSpace("local");
-      const viewerSpace = await session.requestReferenceSpace("viewer");
-      hitSource = await session.requestHitTestSource({ space: viewerSpace });
-
-      session.addEventListener("end", () => {
-        hitSource = null; placed = false;
-        hintEl.textContent = "Move phone to find a wall, then tap spiders!";
-      });
-
-      document.getElementById("enter").style.display = "none";
-      hintEl.textContent = "Move phone to detect a surface…";
-      renderer.setAnimationLoop(onXRFrame);
     }
-
-    async function onXRFrame(t, frame) {
-      const session = renderer.xr.getSession();
-      const pose = frame.getViewerPose(xrRefSpace);
-      if (!pose) return;
-
-      // Basic draw
-      renderer.render(scene, camera);
-
-      if (!hitSource) return;
-      const results = frame.getHitTestResults(hitSource);
-      if (results.length && !placed) {
-        // Use the first result. This may be floor/table/wall; for a real wall-only filter,
-        // you’d use plane detection APIs or estimate from orientation.
-        const hit = results[0];
-        const hitPose = hit.getPose(xrRefSpace);
-        // Spawn once at the detected surface
-        spawnSpidersOnPlane(hitPose.transform.matrix);
-        placed = true;
-      }
-    }
-
-    document.getElementById("enter").addEventListener("click", startAR);
-    window.addEventListener("resize", ()=>renderer.setSize(innerWidth, innerHeight));
   </script>
+
+  <a-scene
+    embedded
+    arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
+    vr-mode-ui="enabled: false"
+    renderer="logarithmicDepthBuffer: true; precision: medium;"
+    loading-screen="enabled: false;">
+
+    <a-marker preset="hiro">
+      <!-- Spiders will be added dynamically via JavaScript -->
+    </a-marker>
+
+    <a-entity camera></a-entity>
+  </a-scene>
 </body>
 </html>
-
