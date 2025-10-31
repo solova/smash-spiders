@@ -55,11 +55,12 @@
 
     // Pool for spiders
     const spiders = [];
-    let spidersSpawned = false;
     let markerObject = null;
     let scene = null;
     let camera = null;
     let raycaster = null;
+    let markerVisible = false;
+    let spawnInterval = null;
 
     // Wait for A-Frame to initialize
     window.addEventListener('load', () => {
@@ -77,15 +78,15 @@
 
         // Listen for marker found/lost events
         markerEl.addEventListener('markerFound', () => {
-          if (!spidersSpawned) {
-            spawnSpiders();
-            spidersSpawned = true;
-            hintEl.textContent = "Tap spiders to smash!";
-          }
+          markerVisible = true;
+          hintEl.textContent = "Tap spiders to smash!";
+          startSpawning();
         });
 
         markerEl.addEventListener('markerLost', () => {
+          markerVisible = false;
           hintEl.textContent = "Point camera at marker!";
+          stopSpawning();
         });
 
         // Add click handler
@@ -94,27 +95,48 @@
       });
     });
 
-    function spawnSpiders() {
-      const count = 10;
-      for (let i = 0; i < count; i++) {
-        const m = new THREE.Mesh(spiderGeo, spiderMat.clone());
+    function spawnSingleSpider() {
+      const m = new THREE.Mesh(spiderGeo, spiderMat.clone());
 
-        // Random offsets within marker area (Hiro marker is about 8cm square)
-        // We'll spread them over a slightly larger area
-        const offsetX = (Math.random() - 0.5) * 0.15; // 15cm spread
-        const offsetY = (Math.random() - 0.5) * 0.15;
-        const offsetZ = Math.random() * 0.02; // slight height variation
+      // Random offsets within marker area (Hiro marker is about 8cm square)
+      // We'll spread them over a slightly larger area
+      const offsetX = (Math.random() - 0.5) * 0.15; // 15cm spread
+      const offsetY = (Math.random() - 0.5) * 0.15;
+      const offsetZ = Math.random() * 0.02; // slight height variation
 
-        m.position.set(offsetX, offsetY, offsetZ);
+      m.position.set(offsetX, offsetY, offsetZ);
 
-        // Random rotation and scale variance
-        m.rotateZ((Math.random() - 0.5) * Math.PI * 2);
-        const s = 0.8 + Math.random() * 0.5;
-        m.scale.setScalar(s);
+      // Random rotation and scale variance
+      m.rotateZ((Math.random() - 0.5) * Math.PI * 2);
+      const s = 0.8 + Math.random() * 0.5;
+      m.scale.setScalar(s);
 
-        m.userData.alive = true;
-        markerObject.add(m);
-        spiders.push(m);
+      m.userData.alive = true;
+      markerObject.add(m);
+      spiders.push(m);
+    }
+
+    function startSpawning() {
+      if (spawnInterval) return; // Already spawning
+
+      // Spawn first spider immediately
+      spawnSingleSpider();
+
+      // Then spawn with probability every 2 seconds
+      spawnInterval = setInterval(() => {
+        if (markerVisible) {
+          // 60% chance to spawn a spider
+          if (Math.random() < 0.6) {
+            spawnSingleSpider();
+          }
+        }
+      }, 2000); // Check every 2 seconds
+    }
+
+    function stopSpawning() {
+      if (spawnInterval) {
+        clearInterval(spawnInterval);
+        spawnInterval = null;
       }
     }
 
