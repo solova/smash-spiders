@@ -11,10 +11,19 @@
       align-items: flex-start; justify-content: space-between; padding: 16px;
       font-family: system-ui, sans-serif; color: white; z-index: 100;
     }
-    .pill { background: rgba(0,0,0,.7); border: 1px solid rgba(255,255,255,.3);
-      border-radius: 999px; padding: 8px 12px; pointer-events:auto; font-size: 14px; }
+    .pill {
+      background: rgba(0,0,0,.7);
+      border: 1px solid rgba(255,255,255,.3);
+      border-radius: 999px;
+      padding: 8px 12px;
+      pointer-events:auto;
+      font-size: 14px;
+    }
     #hint { opacity:.9; max-width: 200px; }
   </style>
+  <script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.4.2/dist/aframe-master.min.js"></script>
+  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
 </head>
 <body>
   <div id="overlay">
@@ -22,87 +31,121 @@
     <div class="pill" id="hint">Point camera at the Hiro marker to spawn spiders!</div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.4.2/dist/aframe-master.min.js"></script>
-  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
-  <script type="module">
-    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+  <a-scene
+    embedded
+    arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
+    vr-mode-ui="enabled: false"
+    renderer="logarithmicDepthBuffer: true; precision: medium;"
+    loading-screen="enabled: false;">
 
+    <a-marker preset="hiro" id="marker">
+      <!-- Spiders will be added dynamically via JavaScript -->
+    </a-marker>
+
+    <a-entity camera></a-entity>
+  </a-scene>
+
+  <script>
     // Score UI
     let score = 0;
     const scoreEl = document.getElementById("score");
-    const hintEl  = document.getElementById("hint");
+    const hintEl = document.getElementById("hint");
 
-    // Make a tiny "spider" texture (canvas generated)
-    function makeSpiderTexture() {
-      const s = 128, c = document.createElement("canvas"); c.width = c.height = s;
-      const g = c.getContext("2d");
-      g.clearRect(0,0,s,s);
-      // body
-      g.fillStyle = "#111"; g.beginPath(); g.arc(64,64,26,0,Math.PI*2); g.fill();
-      // head
-      g.beginPath(); g.arc(64,44,12,0,Math.PI*2); g.fill();
-      // legs
-      g.strokeStyle = "#111"; g.lineWidth = 3;
-      const legs = [[36,58,16,40],[36,66,14,66],[36,74,16,94],[92,58,112,40],[92,66,114,66],[92,74,112,94]];
-      legs.forEach(([x1,y1,x2,y2])=>{ g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.stroke(); });
-      return new THREE.CanvasTexture(c);
-    }
-
-    const spiderTex = makeSpiderTexture();
-    spiderTex.anisotropy = 8;
-    const spiderMat = new THREE.MeshBasicMaterial({ map: spiderTex, transparent: true });
-    const spiderGeo = new THREE.PlaneGeometry(0.12, 0.16); // ~12x16 cm sprite
-
-    // Pool for spiders
+    // Game state
     const spiders = [];
     let markerObject = null;
-    let scene = null;
     let camera = null;
     let raycaster = null;
     let markerVisible = false;
     let spawnInterval = null;
 
-    // Wait for A-Frame to initialize
-    window.addEventListener('load', () => {
-      const sceneEl = document.querySelector('a-scene');
+    // Spider material and geometry
+    let spiderTex = null;
+    let spiderMat = null;
+    let spiderGeo = null;
 
-      // Wait for scene to fully load
-      sceneEl.addEventListener('loaded', () => {
-        scene = sceneEl.object3D;
-        camera = sceneEl.camera;
-        raycaster = new THREE.Raycaster();
+    // Make a tiny "spider" texture (canvas generated)
+    function makeSpiderTexture() {
+      const s = 128;
+      const c = document.createElement("canvas");
+      c.width = c.height = s;
+      const g = c.getContext("2d");
+      g.clearRect(0, 0, s, s);
 
-        // Get the marker object
-        const markerEl = document.querySelector('a-marker');
-        markerObject = markerEl.object3D;
+      // body
+      g.fillStyle = "#111";
+      g.beginPath();
+      g.arc(64, 64, 26, 0, Math.PI * 2);
+      g.fill();
 
-        // Listen for marker found/lost events
-        markerEl.addEventListener('markerFound', () => {
-          markerVisible = true;
-          hintEl.textContent = "Tap spiders to smash!";
-          startSpawning();
-        });
+      // head
+      g.beginPath();
+      g.arc(64, 44, 12, 0, Math.PI * 2);
+      g.fill();
 
-        markerEl.addEventListener('markerLost', () => {
-          markerVisible = false;
-          hintEl.textContent = "Point camera at marker!";
-          stopSpawning();
-        });
-
-        // Add click handler
-        document.addEventListener('click', onTap, { passive: false });
-        document.addEventListener('touchend', onTap, { passive: false });
+      // legs
+      g.strokeStyle = "#111";
+      g.lineWidth = 3;
+      const legs = [
+        [36, 58, 16, 40],
+        [36, 66, 14, 66],
+        [36, 74, 16, 94],
+        [92, 58, 112, 40],
+        [92, 66, 114, 66],
+        [92, 74, 112, 94]
+      ];
+      legs.forEach(([x1, y1, x2, y2]) => {
+        g.beginPath();
+        g.moveTo(x1, y1);
+        g.lineTo(x2, y2);
+        g.stroke();
       });
-    });
+
+      return new THREE.CanvasTexture(c);
+    }
+
+    function initializeGame() {
+      // Create spider materials
+      spiderTex = makeSpiderTexture();
+      spiderTex.anisotropy = 8;
+      spiderMat = new THREE.MeshBasicMaterial({ map: spiderTex, transparent: true });
+      spiderGeo = new THREE.PlaneGeometry(0.12, 0.16);
+
+      // Get references
+      const sceneEl = document.querySelector('a-scene');
+      const markerEl = document.getElementById('marker');
+
+      markerObject = markerEl.object3D;
+      camera = sceneEl.camera;
+      raycaster = new THREE.Raycaster();
+
+      // Listen for marker found/lost events
+      markerEl.addEventListener('markerFound', () => {
+        markerVisible = true;
+        hintEl.textContent = "Tap spiders to smash!";
+        startSpawning();
+      });
+
+      markerEl.addEventListener('markerLost', () => {
+        markerVisible = false;
+        hintEl.textContent = "Point camera at marker!";
+        stopSpawning();
+      });
+
+      // Add click/touch handlers
+      window.addEventListener('click', onTap, false);
+      window.addEventListener('touchend', onTap, false);
+    }
 
     function spawnSingleSpider() {
+      if (!markerObject || !spiderGeo || !spiderMat) return;
+
       const m = new THREE.Mesh(spiderGeo, spiderMat.clone());
 
-      // Random offsets within marker area (Hiro marker is about 8cm square)
-      // We'll spread them over a slightly larger area
-      const offsetX = (Math.random() - 0.5) * 0.15; // 15cm spread
+      // Random offsets within marker area
+      const offsetX = (Math.random() - 0.5) * 0.15;
       const offsetY = (Math.random() - 0.5) * 0.15;
-      const offsetZ = Math.random() * 0.02; // slight height variation
+      const offsetZ = Math.random() * 0.02;
 
       m.position.set(offsetX, offsetY, offsetZ);
 
@@ -117,7 +160,7 @@
     }
 
     function startSpawning() {
-      if (spawnInterval) return; // Already spawning
+      if (spawnInterval) return;
 
       // Spawn first spider immediately
       spawnSingleSpider();
@@ -130,7 +173,7 @@
             spawnSingleSpider();
           }
         }
-      }, 2000); // Check every 2 seconds
+      }, 2000);
     }
 
     function stopSpawning() {
@@ -141,13 +184,15 @@
     }
 
     function onTap(e) {
-      e.preventDefault();
-
       if (!camera || !raycaster || spiders.length === 0) return;
 
       // Get touch/click position
       const touch = e.changedTouches ? e.changedTouches[0] : e;
-      const rect = document.querySelector('a-scene').canvas.getBoundingClientRect();
+      const sceneEl = document.querySelector('a-scene');
+
+      if (!sceneEl || !sceneEl.canvas) return;
+
+      const rect = sceneEl.canvas.getBoundingClientRect();
 
       const ndc = {
         x: ((touch.clientX - rect.left) / rect.width) * 2 - 1,
@@ -155,23 +200,32 @@
       };
 
       raycaster.setFromCamera(ndc, camera);
-      const hits = raycaster.intersectObjects(spiders.filter(s => s.userData.alive), false);
+      const aliveSpiders = spiders.filter(s => s.userData.alive);
+      const hits = raycaster.intersectObjects(aliveSpiders, false);
 
-      if (hits.length) {
+      if (hits.length > 0) {
         const m = hits[0].object;
         m.userData.alive = false;
 
         // Squash animation + fade
         const start = performance.now();
         const originalScale = m.scale.x;
+
         const anim = (t) => {
           const k = Math.min(1, (t - start) / 120);
-          m.scale.set(originalScale * (1.2 - k * 1.1), originalScale * (0.2 + k * 0.2), 1);
+          m.scale.set(
+            originalScale * (1.2 - k * 1.1),
+            originalScale * (0.2 + k * 0.2),
+            1
+          );
           m.material.opacity = 1 - k;
+
           if (k < 1) {
             requestAnimationFrame(anim);
           } else {
-            markerObject.remove(m);
+            if (markerObject) {
+              markerObject.remove(m);
+            }
           }
         };
         requestAnimationFrame(anim);
@@ -180,20 +234,16 @@
         scoreEl.textContent = `Score: ${score}`;
       }
     }
+
+    // Wait for A-Frame scene to load
+    window.addEventListener('load', () => {
+      const sceneEl = document.querySelector('a-scene');
+      if (sceneEl.hasLoaded) {
+        initializeGame();
+      } else {
+        sceneEl.addEventListener('loaded', initializeGame);
+      }
+    });
   </script>
-
-  <a-scene
-    embedded
-    arjs="sourceType: webcam; debugUIEnabled: false; detectionMode: mono_and_matrix; matrixCodeType: 3x3;"
-    vr-mode-ui="enabled: false"
-    renderer="logarithmicDepthBuffer: true; precision: medium;"
-    loading-screen="enabled: false;">
-
-    <a-marker preset="hiro">
-      <!-- Spiders will be added dynamically via JavaScript -->
-    </a-marker>
-
-    <a-entity camera></a-entity>
-  </a-scene>
 </body>
 </html>
